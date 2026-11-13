@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Zorro: la cara entera es una flecha hacia abajo; gafas wayfarer como huecos -->
+  <path fill="#000" fill-rule="evenodd" d="
+    M128 236 L64 178 L30 116 L36 16 L102 70 H154 L220 16 L226 116 L192 178 Z
+    M50 44 L52 92 L84 72 Z
+    M206 44 L204 92 L172 72 Z
+    M54 96 H202 V118 Q202 152 164 152 Q134 152 132 122 H124 Q122 152 92 152 Q54 152 54 118 Z
+    M62 104 H118 V118 Q118 144 92 144 Q62 144 62 118 Z
+    M138 104 H194 V118 Q194 144 164 144 Q138 144 138 118 Z
+    M72 110 H84 L74 130 H62 Z
+    M148 110 H160 L150 130 H138 Z
+    M84 168 Q128 186 172 168 L136 210 Q128 216 120 210 Z"/>
+  <path fill="#000" d="M114 196 H142 Q142 210 128 216 Q114 210 114 196 Z"/>
+</svg>

@@ -1,0 +1,19 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node / interfaz
+ui/node_modules/
+ui/dist/
+
+# Compilación y datos locales
+build/
+dist/
+datos/
+*.exe
+
+# Varios
+.DS_Store
+Thumbs.db
+*.log

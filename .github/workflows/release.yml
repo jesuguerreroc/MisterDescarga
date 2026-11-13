@@ -1,0 +1,48 @@
+# Al subir un tag (p. ej. v1.0.0) arma MisterDescarga portátil (.zip) y lo publica en Releases.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Instalar dependencias de Python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Armar versión portátil
+        run: python scripts/build_portable.py
+
+      - name: Publicar en Releases
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/MisterDescarga-*-portable.zip
+          generate_release_notes: true
+
+      - name: Guardar artefacto (ejecución manual)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: MisterDescarga
+          path: dist/MisterDescarga-*-portable.zip
