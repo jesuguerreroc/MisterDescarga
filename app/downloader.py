@@ -1,8 +1,10 @@
 """Motor de descargas: ejecuta yt-dlp.exe y traduce su salida a estado de cada descarga."""
 
+import ctypes
 import json
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -25,9 +27,12 @@ PROGRESS_TEMPLATE = (
 POST_TEMPLATE = "postprocess:MDPOST|%(progress.postprocessor)s|%(progress.status)s"
 ITEM_PRINT = "before_dl:MDITEM|%(playlist_index)s|%(n_entries)s|%(format_id)s|%(title)s"
 FILE_PRINT = "after_move:MDFILE|%(filepath)s"
-ID_PRINT = "video:MDID|%(id)s"
 
-SINGLE_TEMPLATE = "%(title).120B [%(id)s].%(ext)s"
+# Cada descarga se baja en <carpeta>/.descargando/<id>/ y al terminar cada archivo se
+# mueve a la carpeta final. Así los nombres quedan limpios (sin el [id] del video),
+# los temporales nunca se mezclan con otros archivos y se puede continuar otro día.
+STAGING_NAME = ".descargando"
+SINGLE_TEMPLATE = "%(title).120B.%(ext)s"
 PLAYLIST_TEMPLATE = "%(playlist_title,playlist_id).80B/%(playlist_index)03d - %(title).120B.%(ext)s"
 
 AUDIO_EXTRAS = ["--embed-thumbnail", "--convert-thumbnails", "jpg", "--embed-metadata"]
@@ -196,19 +201,33 @@ class Job:
     warning: str = ""
     attempt: int = 0
     created: float = field(default_factory=time.time)
+    dest: str = ""  # carpeta final (la de Ajustes al empezar)
+    staging: str = ""  # carpeta temporal de esta descarga
+    resumed: bool = False  # vino de la cola guardada al cerrar
 
     def to_dict(self) -> dict:
         return asdict(self)
 
+    def persisted(self) -> dict:
+        return {k: getattr(self, k) for k in PERSISTED}
+
+
+PERSISTED = ("id", "url", "preset", "playlist", "title", "thumbnail", "created", "dest", "staging")
+ACTIVE = ("queued", "downloading", "processing")
+FINISHED = ("done", "error", "canceled")
+
 
 class DownloadManager:
-    def __init__(self, notify: Callable[[dict], None]):
+    def __init__(self, notify: Callable[[dict], None], on_finish: Callable[[dict], None] | None = None):
         self._notify = notify
+        self._on_finish = on_finish
         self._jobs: "OrderedDict[str, Job]" = OrderedDict()
         self._procs: dict[str, subprocess.Popen] = {}
         self._canceled: set[str] = set()
         self._lock = threading.RLock()
         self._last_push: dict[str, float] = {}
+        self._paused = False
+        self._shutting_down = False
 
     # ---------- API pública ----------
     def list_jobs(self) -> list[dict]:
@@ -221,24 +240,50 @@ class DownloadManager:
         job = Job(url=url.strip(), preset=preset, playlist=bool(playlist), title=title or url, thumbnail=thumbnail)
         with self._lock:
             self._jobs[job.id] = job
+        self._save_queue()
         self._push(job, force=True)
         self._pump()
         return job.to_dict()
 
+    def restore(self) -> int:
+        """Vuelve a poner en la cola lo que quedó pendiente al cerrar. Devuelve cuántas."""
+        keep: set[str] = set()
+        with self._lock:
+            for d in settings.load_queue():
+                try:
+                    job = Job(
+                        id=str(d["id"]), url=str(d["url"]), preset=str(d["preset"]),
+                        playlist=bool(d.get("playlist")), title=str(d.get("title") or d["url"]),
+                        thumbnail=str(d.get("thumbnail") or ""), created=float(d.get("created") or time.time()),
+                        dest=str(d.get("dest") or ""), staging=str(d.get("staging") or ""), resumed=True,
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if job.preset in PRESET_ARGS and job.id not in self._jobs:
+                    self._jobs[job.id] = job
+                    keep.add(job.id)
+            count = len(self._jobs)
+        _clean_staging(settings.load_settings()["download_dir"], keep)
+        return count
+
+    def set_paused(self, paused: bool) -> None:
+        """En pausa no arranca descargas nuevas (p. ej. mientras se actualiza yt-dlp)."""
+        self._paused = paused
+        if not paused:
+            self._pump()
+
     def cancel(self, job_id: str) -> None:
         with self._lock:
             job = self._jobs.get(job_id)
-            if not job or job.status in ("done", "error", "canceled"):
+            if not job or job.status in FINISHED:
                 return
             self._canceled.add(job_id)
             proc = self._procs.get(job_id)
             if job.status == "queued":
                 job.status = "canceled"
         if proc and proc.poll() is None:
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                capture_output=True, creationflags=CREATE_NO_WINDOW,
-            )
+            _kill(proc)
+        self._save_queue()
         self._push(job, force=True)
         self._pump()
 
@@ -253,23 +298,38 @@ class DownloadManager:
     def remove(self, job_id: str) -> None:
         with self._lock:
             job = self._jobs.get(job_id)
-            if job and job.status in ("done", "error", "canceled"):
+            if job and job.status in FINISHED:
                 del self._jobs[job_id]
 
     def clear_finished(self) -> None:
         with self._lock:
-            for jid in [j.id for j in self._jobs.values() if j.status in ("done", "error", "canceled")]:
+            for jid in [j.id for j in self._jobs.values() if j.status in FINISHED]:
                 del self._jobs[jid]
 
     def active_count(self) -> int:
         with self._lock:
             return sum(1 for j in self._jobs.values() if j.status in ("downloading", "processing"))
 
-    def shutdown(self) -> None:
+    def pending_count(self) -> int:
         with self._lock:
-            ids = list(self._procs.keys())
-        for jid in ids:
-            self.cancel(jid)
+            return sum(1 for j in self._jobs.values() if j.status in ACTIVE)
+
+    def shutdown(self) -> None:
+        """Al cerrar: guarda lo pendiente (para seguir la próxima vez) y detiene yt-dlp.
+
+        Las carpetas temporales se conservan: yt-dlp continúa desde los .part.
+        """
+        with self._lock:
+            pending = [j.persisted() for j in self._jobs.values() if j.status in ACTIVE]
+            self._shutting_down = True
+            procs = list(self._procs.values())
+        try:
+            settings.save_queue(pending)
+        except OSError:
+            pass
+        for proc in procs:
+            if proc.poll() is None:
+                _kill(proc)
 
     # ---------- internos ----------
     def _push(self, job: Job, force: bool = False) -> None:
@@ -282,7 +342,19 @@ class DownloadManager:
         except Exception:
             pass
 
+    def _save_queue(self) -> None:
+        with self._lock:
+            if self._shutting_down:
+                return
+            pending = [j.persisted() for j in self._jobs.values() if j.status in ACTIVE]
+        try:
+            settings.save_queue(pending)
+        except OSError:
+            pass
+
     def _pump(self) -> None:
+        if self._paused or self._shutting_down:
+            return
         limit = settings.load_settings()["max_concurrent"]
         with self._lock:
             running = sum(1 for j in self._jobs.values() if j.status in ("downloading", "processing"))
@@ -300,13 +372,12 @@ class DownloadManager:
             "--newline", "--no-colors", "--quiet", "--progress", "--no-simulate", "--no-mtime",
             "--concurrent-fragments", "4",
             *(["--ffmpeg-location", ffmpeg_dir] if ffmpeg_dir else []),
-            "-P", conf["download_dir"],
+            "-P", job.staging,
             "-o", PLAYLIST_TEMPLATE if job.playlist else SINGLE_TEMPLATE,
             "--progress-template", PROGRESS_TEMPLATE,
             "--progress-template", POST_TEMPLATE,
             "--print", ITEM_PRINT,
             "--print", FILE_PRINT,
-            "--print", ID_PRINT,
             *_cookie_args(conf["cookies_browser"]),
             *preset_args(job.preset, bool(ffmpeg_dir)),
         ]
@@ -314,18 +385,54 @@ class DownloadManager:
         cmd.append(job.url)
         return cmd
 
+    def _prepare_staging(self, job: Job, conf: dict) -> bool:
+        if not job.dest:
+            job.dest = conf["download_dir"]
+        if not job.staging:
+            job.staging = str(Path(job.dest) / STAGING_NAME / job.id)
+        try:
+            Path(job.staging).mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            job.status, job.error = "error", f"No se pudo usar la carpeta de descargas: {exc}"
+            return False
+        _hide(Path(job.staging).parent)
+        self._save_queue()
+        return True
+
+    def _deliver(self, job: Job, path: str) -> str:
+        """Mueve un archivo terminado de la carpeta temporal a la final. Devuelve dónde quedó."""
+        src = Path(path)
+        try:
+            rel = src.relative_to(job.staging)
+        except ValueError:
+            return path  # no está en la carpeta temporal: se deja donde esté
+        for _ in range(8):
+            target = _unique(Path(job.dest) / rel)
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.rename(src, target)
+                return str(target)
+            except FileExistsError:
+                continue  # otra descarga tomó ese nombre justo ahora
+            except PermissionError:
+                time.sleep(0.4)  # yt-dlp todavía lo tiene abierto
+            except OSError:
+                break
+        return path
+
     def _run(self, job: Job) -> None:
         conf = settings.load_settings()
-        Path(conf["download_dir"]).mkdir(parents=True, exist_ok=True)
-        before = _list_dir(conf["download_dir"])
         self._push(job, force=True)
+        if not self._prepare_staging(job, conf):
+            self._finish(job)
+            return
 
         ff_state, ffmpeg_dir = ffmpeg_status()
         if ff_state != "ok":
             job.warning = NO_FFMPEG_WARNING
 
         errors: list[str] = []
-        ids: set[str] = set()  # IDs de video de esta descarga (para limpiar solo lo suyo)
+        stuck: list[str] = []  # archivos que no se pudieron mover mientras yt-dlp seguía
         merged = False  # el formato actual combina video+audio
         try:
             proc = subprocess.Popen(
@@ -341,7 +448,7 @@ class DownloadManager:
 
         with self._lock:
             self._procs[job.id] = proc
-            if job.id in self._canceled:
+            if job.id in self._canceled or self._shutting_down:
                 proc.kill()
 
         assert proc.stdout is not None
@@ -370,15 +477,16 @@ class DownloadManager:
             elif line.startswith("MDFILE|"):
                 path = line.split("|", 1)[1].strip()
                 if path and path != "NA":
-                    job.filepath = path
+                    final = self._deliver(job, path)
+                    if final == path and Path(path).is_relative_to(job.staging):
+                        stuck.append(path)
+                    job.filepath = final
                     job.files += 1
                     if not job.folder:
-                        job.folder = str(Path(path).parent)
+                        job.folder = str(Path(final).parent)
                     if job.playlist and job.item_count:
                         job.progress = min(100.0, job.item_index / job.item_count * 100)
                     self._push(job, force=True)
-            elif line.startswith("MDID|"):
-                ids.add(line.split("|", 1)[1].strip())
             elif line.startswith("ERROR"):
                 errors.append(line)
 
@@ -387,21 +495,28 @@ class DownloadManager:
             self._procs.pop(job.id, None)
             was_canceled = job.id in self._canceled
             self._canceled.discard(job.id)
+            if self._shutting_down and not was_canceled:
+                return  # se cerró el programa: queda en la cola para la próxima vez
+
+        for path in stuck:  # yt-dlp ya terminó, ahora sí se pueden mover
+            final = self._deliver(job, path)
+            if job.filepath == path:
+                job.filepath = final
+            if job.folder == str(Path(path).parent):
+                job.folder = str(Path(final).parent)
 
         if was_canceled:
             job.status = "canceled"
-            _remove_leftovers(conf["download_dir"], before, ids, job.playlist)
         elif job.files > 0:
             job.status, job.progress = "done", 100.0
             if proc.returncode != 0 and errors:
                 note = f"Algunos elementos fallaron ({len(errors)})."
                 job.warning = f"{job.warning} {note}".strip()
         elif proc.returncode == 0 and not errors:
-            # yt-dlp terminó bien pero no imprimió ruta (p. ej. ya existía).
+            # yt-dlp terminó bien pero no imprimió ruta (p. ej. una lista vacía).
             job.status, job.progress = "done", 100.0
-            job.folder = job.folder or conf["download_dir"]
+            job.folder = job.folder or job.dest
         else:
-            _remove_leftovers(conf["download_dir"], before, ids, job.playlist)
             last = errors[-1] if errors else ""
             if job.attempt == 0 and "403" in last:
                 # YouTube y otros a veces rechazan una vez y aceptan al reintentar.
@@ -412,6 +527,7 @@ class DownloadManager:
                 return
             job.status = "error"
             job.error = friendly_error(last or f"yt-dlp terminó con código {proc.returncode}")
+        _remove_staging(job.staging)
         self._finish(job)
 
     def _on_progress(self, job: Job, parts: list[str], merged: bool) -> None:
@@ -445,6 +561,7 @@ class DownloadManager:
 
     def _finish(self, job: Job) -> None:
         job.speed = job.eta = 0.0
+        self._save_queue()
         self._push(job, force=True)
         if job.status == "done":
             try:
@@ -462,40 +579,78 @@ class DownloadManager:
                 })
             except OSError:
                 pass
+        if self._on_finish and job.status in ("done", "error"):
+            try:
+                self._on_finish(job.to_dict())
+            except Exception:
+                pass
         self._pump()
 
 
-# Restos que yt-dlp deja si una descarga falla o se cancela.
-_LEFTOVER = re.compile(r"(\.part(-Frag\d+)?|\.ytdl|\.temp|\.jpe?g|\.webp|\.png|\.f\d+\.\w+)$", re.IGNORECASE)
+# ---------- archivos ----------
+_JOB_ID = re.compile(r"^[0-9a-f]{10}$")
 
 
-def _list_dir(folder: str) -> set[str]:
+def _kill(proc: subprocess.Popen) -> None:
+    """Termina yt-dlp y sus hijos (ffmpeg)."""
+    subprocess.run(
+        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+        capture_output=True, creationflags=CREATE_NO_WINDOW,
+    )
     try:
-        return {e.name for e in os.scandir(folder)}
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _unique(path: Path) -> Path:
+    """`Título.mp4` → `Título (2).mp4` si ya existe, y así sucesivamente."""
+    if not path.exists():
+        return path
+    n = 2
+    while True:
+        candidate = path.with_name(f"{path.stem} ({n}){path.suffix}")
+        if not candidate.exists():
+            return candidate
+        n += 1
+
+
+def _hide(folder: Path) -> None:
+    try:
+        FILE_ATTRIBUTE_HIDDEN = 0x2
+        ctypes.windll.kernel32.SetFileAttributesW(str(folder), FILE_ATTRIBUTE_HIDDEN)
+    except Exception:
+        pass
+
+
+def _remove_staging(staging: str) -> None:
+    """Borra la carpeta temporal de una descarga (y .descargando si quedó vacía)."""
+    if not staging:
+        return
+    path = Path(staging)
+    if path.parent.name != STAGING_NAME or not _JOB_ID.match(path.name):
+        return  # por seguridad, solo carpetas creadas por nosotros
+    shutil.rmtree(path, ignore_errors=True)
+    try:
+        path.parent.rmdir()  # solo si está vacía
     except OSError:
-        return set()
+        pass
 
 
-def _remove_leftovers(folder: str, before: set[str], ids: set[str], playlist: bool) -> None:
-    """Borra solo archivos temporales NUEVOS de esta descarga.
-
-    Un archivo suelto se borra únicamente si lleva el [id] de uno de sus videos,
-    así nunca se tocan descargas paralelas ni archivos que ya estaban.
-    """
-    tags = {f"[{i}]" for i in ids if i and i != "NA"}
-    for name in _list_dir(folder) - before:
-        path = Path(folder) / name
-        try:
-            if path.is_file() and _LEFTOVER.search(name) and any(t in name for t in tags):
-                path.unlink()
-            elif path.is_dir() and playlist:  # carpeta de una playlist que falló
-                for f in path.iterdir():
-                    if f.is_file() and _LEFTOVER.search(f.name):
-                        f.unlink()
-                if not any(path.iterdir()):
-                    path.rmdir()
-        except OSError:
-            pass
+def _clean_staging(download_dir: str, keep: set[str]) -> None:
+    """Al abrir: borra carpetas temporales viejas que no pertenezcan a la cola guardada."""
+    root = Path(download_dir) / STAGING_NAME
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        return
+    for child in children:
+        if child.is_dir() and _JOB_ID.match(child.name) and child.name not in keep:
+            _remove_staging(str(child))
+    try:
+        root.rmdir()
+    except OSError:
+        pass
 
 
 def open_in_explorer(path: str, select: bool = False) -> None:

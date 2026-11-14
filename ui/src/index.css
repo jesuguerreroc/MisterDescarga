@@ -15,11 +15,33 @@
   --color-ink-2: #55524a;
   --color-ink-3: #8a8679;
   --color-sun: #ffd23f;
+  --color-on-sun: #17160f; /* texto sobre amarillo: siempre oscuro */
   --color-sun-soft: #fff3c4;
   --color-beak: #ff8a3d;
   --color-ok: #2c8a4b;
   --color-bad: #c43d2c;
   --color-warn: #a86a12;
+}
+
+/* De noche: el mismo papel y tinta, invertidos y tibios. El sol no cambia. */
+:root[data-theme='dark'] {
+  --color-paper: #16150f;
+  --color-card: #1f1e17;
+  --color-sunk: #2a2820;
+  --color-line: #312f26;
+  --color-line-strong: #4b483d;
+  --color-ink: #f2efe4;
+  --color-ink-2: #bdb8aa;
+  --color-ink-3: #8b877a;
+  --color-sun-soft: #3a3217;
+  --color-ok: #62c786;
+  --color-bad: #f07c68;
+  --color-warn: #e3a94b;
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
 }
 
 html,
@@ -30,12 +52,16 @@ body,
 
 body {
   margin: 0;
-  background: var(--color-paper);
+  background: transparent; /* hasta saber el tema se ve el fondo de la ventana */
   color: var(--color-ink);
   font-family: var(--font-sans);
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
   user-select: none;
+}
+
+:root[data-theme] body {
+  background: var(--color-paper);
 }
 
 input,
@@ -47,7 +73,7 @@ code {
 
 ::selection {
   background: var(--color-sun);
-  color: var(--color-ink);
+  color: var(--color-on-sun);
 }
 
 @layer base {
@@ -71,21 +97,21 @@ code {
 
 /* Sombra "recortada" de los botones principales */
 .press {
-  box-shadow: 0 2px 0 var(--color-ink);
+  box-shadow: 0 2px 0 var(--color-on-sun);
   transition:
     transform 0.08s ease,
     box-shadow 0.08s ease;
 }
 .press:active:not(:disabled) {
   transform: translateY(2px);
-  box-shadow: 0 0 0 var(--color-ink);
+  box-shadow: 0 0 0 var(--color-on-sun);
 }
 
 .stripes {
   background-image: repeating-linear-gradient(
     -45deg,
     var(--color-ink) 0 6px,
-    #4a473d 6px 12px
+    color-mix(in srgb, var(--color-ink) 70%, var(--color-paper)) 6px 12px
   );
   background-size: 17px 17px;
   animation: stripes 0.7s linear infinite;
@@ -125,4 +151,28 @@ code {
 .waddle {
   transform-origin: 50% 90%;
   animation: waddle 1.2s ease-in-out infinite;
+}
+
+/* Cambio de tema: la vista nueva aparece en un círculo (ver theme.ts). */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+/* El pingüino suelto necesita un borde para no perderse de noche. */
+:root[data-theme='dark'] .penguin-solo .penguin-body {
+  stroke: var(--color-line-strong);
+  stroke-width: 5;
+}
+
+/* Sol y luna del botón de tema: uno gira y se va, el otro llega. */
+.theme-icon {
+  transition:
+    transform 0.5s cubic-bezier(0.65, 0, 0.35, 1),
+    opacity 0.3s ease;
+}
+.theme-icon[data-on='false'] {
+  opacity: 0;
+  transform: rotate(-90deg) scale(0.4);
 }

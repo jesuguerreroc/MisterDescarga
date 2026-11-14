@@ -6,8 +6,11 @@ from pathlib import Path
 
 import webview
 
+import settings
 import taskbar
+import window_theme
 from api import Api
+from notify import Notifier
 from paths import APP_ROOT
 from version import APP_NAME
 
@@ -42,8 +45,9 @@ def relaunch_command() -> str:
     return f'"{exe}" "{Path(__file__).resolve()}"'  # desde el código fuente
 
 
-def apply_window_identity(window, icon: Path) -> None:
-    """Pingüino en la ventana, en la barra de tareas y al anclarla (aunque el .exe sea pythonw)."""
+def setup_native_window(window, api: Api, icon: Path | None, dark: bool) -> None:
+    """Pingüino en la ventana y la barra de tareas (aunque el .exe sea pythonw) y
+    barra de título del color del tema."""
     try:
         from System import Action  # type: ignore[import-not-found]
         from System.Drawing import Icon  # type: ignore[import-not-found]
@@ -51,8 +55,12 @@ def apply_window_identity(window, icon: Path) -> None:
         form = window.native
 
         def on_ui_thread():
-            form.Icon = Icon(str(icon))
-            taskbar.set_window_identity(int(form.Handle.ToInt64()), relaunch_command(), f"{icon},0", APP_NAME)
+            hwnd = int(form.Handle.ToInt64())
+            api._set_hwnd(hwnd)
+            window_theme.apply_titlebar(hwnd, dark)
+            if icon:
+                form.Icon = Icon(str(icon))
+                taskbar.set_window_identity(hwnd, relaunch_command(), f"{icon},0", APP_NAME)
 
         form.Invoke(Action(on_ui_thread))
     except Exception:
@@ -76,6 +84,7 @@ def main() -> None:
     quiet_windows_errors()
     taskbar.set_process_app_id()
     api = Api()
+    dark = window_theme.resolve(settings.load_settings()["theme"])
     window = webview.create_window(
         APP_NAME,
         ui_entry(),
@@ -83,16 +92,18 @@ def main() -> None:
         width=1040,
         height=760,
         min_size=(780, 580),
-        background_color="#f4f2ed",
+        # La interfaz no pinta fondo hasta saber el tema: así no hay destello claro.
+        background_color=window_theme.background(dark),
         text_select=False,
     )
-    api._attach(window)
+    icon = find_icon()
+    api._attach(window, Notifier(window, icon))
 
     def on_closing():
-        if api._manager.active_count() > 0:
+        if api._manager.pending_count() > 0:
             ok = window.create_confirmation_dialog(
-                "Descargas en curso",
-                "Hay descargas en curso. Si cierras se cancelarán. ¿Cerrar de todas formas?",
+                "Descargas pendientes",
+                "Las descargas que faltan se pausarán y seguirán cuando vuelvas a abrir MisterDescarga. ¿Cerrar?",
             )
             if not ok:
                 return False
@@ -100,9 +111,8 @@ def main() -> None:
         return True
 
     window.events.closing += on_closing
-    icon = find_icon()
-    if icon:
-        window.events.shown += lambda: apply_window_identity(window, icon)
+    window.events.shown += lambda: setup_native_window(window, api, icon, dark)
+    window.events.loaded += api._start_background
     webview.start(debug=os.environ.get("MD_DEBUG") == "1", http_server=True)
 
 

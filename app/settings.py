@@ -10,10 +10,13 @@ from version import APP_NAME
 
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 HISTORY_FILE = CONFIG_DIR / "history.json"
+QUEUE_FILE = CONFIG_DIR / "cola.json"  # descargas pendientes al cerrar
+STATE_FILE = CONFIG_DIR / "estado.json"  # datos internos (p. ej. cuándo se revisó yt-dlp)
 HISTORY_MAX = 200
 
 PRESETS = {"mp4_best", "mp4_1080", "mp4_720", "mp4_480", "mp3_320", "mp3_192", "m4a"}
 BROWSERS = {"", "chrome", "edge", "firefox", "brave", "opera", "vivaldi"}
+THEMES = {"system", "light", "dark"}
 
 
 def _default_download_dir() -> str:
@@ -26,6 +29,9 @@ DEFAULTS = {
     "max_concurrent": 2,
     "cookies_browser": "",
     "watch_clipboard": True,
+    "notify_done": True,
+    "auto_update_ytdlp": True,
+    "theme": "system",
 }
 
 _lock = threading.Lock()
@@ -68,7 +74,10 @@ def sanitize(data: dict) -> dict:
         out["max_concurrent"] = DEFAULTS["max_concurrent"]
     if out["cookies_browser"] not in BROWSERS:
         out["cookies_browser"] = ""
-    out["watch_clipboard"] = bool(out["watch_clipboard"])
+    for key in ("watch_clipboard", "notify_done", "auto_update_ytdlp"):
+        out[key] = bool(out[key])
+    if out["theme"] not in THEMES:
+        out["theme"] = DEFAULTS["theme"]
     return out
 
 
@@ -94,3 +103,27 @@ def add_history(entry: dict) -> None:
 def clear_history() -> None:
     with _lock:
         _write_json(HISTORY_FILE, [])
+
+
+# ---------- cola pendiente ----------
+def load_queue() -> list:
+    data = _read_json(QUEUE_FILE, [])
+    return [d for d in data if isinstance(d, dict)] if isinstance(data, list) else []
+
+
+def save_queue(items: list) -> None:
+    with _lock:
+        _write_json(QUEUE_FILE, items)
+
+
+# ---------- estado interno ----------
+def load_state() -> dict:
+    data = _read_json(STATE_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+
+def update_state(**values) -> None:
+    with _lock:
+        data = load_state()
+        data.update(values)
+        _write_json(STATE_FILE, data)

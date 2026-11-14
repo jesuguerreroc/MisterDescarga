@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { FolderOpen, X } from 'lucide-react'
-import { call, type AppState, type Job, type Settings } from './api'
+import { FolderOpen, Moon, Sparkles, Sun, X } from 'lucide-react'
+import { call, type AppState, type AppUpdate, type Job, type Settings } from './api'
 import { DownloadPanel } from './components/DownloadPanel'
 import { HistoryPanel } from './components/HistoryPanel'
 import { JobList } from './components/JobList'
@@ -8,6 +8,7 @@ import { SettingsPanel } from './components/SettingsPanel'
 import { SetupScreen } from './components/SetupScreen'
 import { Logo, Penguin, Spinner } from './components/ui'
 import { reduceSetup, type SetupState } from './setup'
+import { applyTheme, isDark, onSystemThemeChange } from './theme'
 
 type Tab = 'download' | 'history' | 'settings'
 
@@ -21,6 +22,9 @@ export default function App() {
     firstRun: false,
     s: { items: {}, error: '' },
   })
+  const [ytdlpBusy, setYtdlpBusy] = useState(false)
+  const [appUpdate, setAppUpdate] = useState<AppUpdate | null>(null)
+  const [, setThemeTick] = useState(0)
   const toastTimer = useRef<number | undefined>(undefined)
 
   const showError = useCallback((msg: string) => {
@@ -33,6 +37,8 @@ export default function App() {
     const s = await call('get_state')
     setState(s)
     setJobs(s.jobs.slice().reverse())
+    setYtdlpBusy(s.ytdlp_updating)
+    if (s.app_update) setAppUpdate(s.app_update)
     return s
   }, [])
 
@@ -65,6 +71,12 @@ export default function App() {
       }
       setSetup((cur) => ({ ...cur, s: reduceSetup(cur.s, ev) }))
     }
+    window.__mdEvent = (ev) => {
+      if (ev.type === 'app-update') return setAppUpdate(ev.update)
+      if (ev.status === 'updating') return setYtdlpBusy(true)
+      setYtdlpBusy(false)
+      if (ev.changed) showError(`Actualicé yt-dlp a la versión ${ev.version}. Los sitios deberían andar mejor.`)
+    }
     refresh()
       .then((s) => {
         if (!s.tools_ready) startSetup(true)
@@ -73,8 +85,23 @@ export default function App() {
     return () => {
       window.__mdJob = undefined
       window.__mdSetup = undefined
+      window.__mdEvent = undefined
     }
   }, [refresh, startSetup, showError])
+
+  // Tema: se aplica al abrir, al cambiarlo y cuando Windows cambia (si está en automático).
+  const theme = state?.settings.theme
+  useEffect(() => {
+    if (!theme) return
+    const update = () => {
+      const dark = isDark(theme)
+      applyTheme(dark)
+      setThemeTick((n) => n + 1)
+      call('apply_theme', dark).catch(() => {})
+    }
+    update()
+    return theme === 'system' ? onSystemThemeChange(update) : undefined
+  }, [theme])
 
   if (!state) {
     return (
@@ -85,6 +112,11 @@ export default function App() {
   }
 
   const setSettings = (s: Settings) => setState({ ...state, settings: s })
+  const dark = isDark(state.settings.theme)
+  const toggleTheme = () =>
+    call('save_settings', { theme: dark ? 'light' : 'dark' })
+      .then(setSettings)
+      .catch((e: Error) => showError(e.message))
   const active = jobs.filter((j) => j.status === 'downloading' || j.status === 'processing' || j.status === 'queued').length
 
   return (
@@ -97,7 +129,7 @@ export default function App() {
         <nav className="flex gap-5 self-stretch">
           <TabButton active={tab === 'download'} onClick={() => setTab('download')}>
             Descargar
-            {active > 0 && <span className="ml-1.5 rounded-full bg-sun px-1.5 text-[11px] font-bold text-ink tabular-nums">{active}</span>}
+            {active > 0 && <span className="ml-1.5 rounded-full bg-sun px-1.5 text-[11px] font-bold text-on-sun tabular-nums">{active}</span>}
           </TabButton>
           <TabButton active={tab === 'history'} onClick={() => setTab('history')}>
             Historial
@@ -106,14 +138,46 @@ export default function App() {
             Ajustes
           </TabButton>
         </nav>
+        {ytdlpBusy && (
+          <span className="mb-3 ml-auto inline-flex items-center gap-2 text-[12.5px] text-ink-3" title="Se revisa una vez al día">
+            <Spinner className="size-3" /> Actualizando yt-dlp…
+          </span>
+        )}
         <button
           onClick={() => call('open_download_dir').catch((e: Error) => showError(e.message))}
-          className="mb-3 ml-auto inline-flex cursor-pointer items-center gap-2 rounded-[10px] px-2.5 py-1.5 font-semibold text-ink-2 hover:bg-sunk hover:text-ink"
+          className={`mb-3 ${ytdlpBusy ? '' : 'ml-auto'} inline-flex cursor-pointer items-center gap-2 rounded-[10px] px-2.5 py-1.5 font-semibold text-ink-2 hover:bg-sunk hover:text-ink`}
           title={state.settings.download_dir}
         >
           <FolderOpen className="size-4" /> Mis descargas
         </button>
+        <button
+          onClick={toggleTheme}
+          title={dark ? 'Cambiar a tema claro' : 'Cambiar a tema oscuro'}
+          aria-label={dark ? 'Cambiar a tema claro' : 'Cambiar a tema oscuro'}
+          className="relative mb-3 -ml-4 grid size-9 cursor-pointer place-items-center rounded-[10px] text-ink-2 hover:bg-sunk hover:text-ink"
+        >
+          <Sun className="theme-icon absolute size-[18px]" data-on={!dark} />
+          <Moon className="theme-icon absolute size-[17px]" data-on={dark} />
+        </button>
       </header>
+
+      {appUpdate?.newer && (
+        <div className="rise flex items-center gap-3 border-b border-line bg-sun-soft px-7 py-2 text-[13px]">
+          <Sparkles className="size-4 shrink-0" />
+          <span className="flex-1">
+            Hay una versión nueva de MisterDescarga: <b>{appUpdate.latest}</b> (tienes la {appUpdate.current}).
+          </span>
+          <button
+            onClick={() => call('open_url', appUpdate.url).catch((e: Error) => showError(e.message))}
+            className="cursor-pointer font-semibold underline underline-offset-2"
+          >
+            Descargar
+          </button>
+          <button onClick={() => setAppUpdate(null)} className="cursor-pointer text-ink-2 hover:text-ink">
+            Ahora no
+          </button>
+        </div>
+      )}
 
       {state.ffmpeg !== 'ok' && state.tools_ready && tab === 'download' && (
         <button onClick={() => setTab('settings')} className="cursor-pointer bg-sun-soft px-7 py-2 text-left text-[13px] text-ink">
@@ -149,6 +213,7 @@ export default function App() {
               onChange={setSettings}
               onError={showError}
               onReinstallFfmpeg={() => startSetup(false, true)}
+              onAppUpdate={setAppUpdate}
             />
           )}
         </div>

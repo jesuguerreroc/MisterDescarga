@@ -15,8 +15,13 @@
 - Pegas un enlace, ves la vista previa y eliges el formato: **MP4** (mejor calidad, 1080p, 720p o 480p), **MP3** (320 o 192 kbps) o **M4A**.
 - Descarga **playlists completas**.
 - Muestra el progreso en vivo con velocidad y tiempo restante, y permite varias descargas a la vez.
+- Si cierras el programa con descargas pendientes, **siguen donde quedaron** la próxima vez que lo abras.
+- Te **avisa con una notificación de Windows** cuando termina una descarga.
+- Los archivos quedan con **nombres limpios** (`Canción.mp3`). Si ya existe, guarda `Canción (2).mp3` sin borrar nada.
 - Si copias un enlace, el programa lo **detecta** y te ofrece descargarlo.
 - Guarda un historial con botones para abrir el archivo o la carpeta.
+- Tiene **tema claro y oscuro** (o el mismo de Windows).
+- **Se mantiene al día solo**: actualiza yt-dlp una vez al día y te avisa cuando sale una versión nueva de MisterDescarga.
 - Puede usar las cookies de tu navegador para videos que piden iniciar sesión.
 - No necesita servidores ni cuentas, y no tiene publicidad. Todo pasa en tu PC.
 
@@ -31,7 +36,7 @@ Por dentro usa [yt-dlp](https://github.com/yt-dlp/yt-dlp), [FFmpeg](https://ffmp
 
 No se instala nada en el computador. Las herramientas, los ajustes y el historial se guardan en la carpeta `datos` que está dentro. Puedes llevar la carpeta en un USB y usarla en otro PC con Windows 10 u 11.
 
-Los videos se guardan en `Descargas\MisterDescarga`. Puedes cambiar la carpeta en **Ajustes**.
+Los videos se guardan en `Descargas\MisterDescarga`. Puedes cambiar la carpeta en **Ajustes**. Lo que está a medio bajar queda en una subcarpeta oculta `.descargando`, que se borra sola al terminar.
 
 ### "Windows protegió su PC"
 
@@ -39,7 +44,7 @@ Si sale ese aviso, pulsa **Más información** y luego **Ejecutar de todas forma
 
 ### Si un sitio deja de funcionar
 
-Los sitios cambian seguido. Ve a **Ajustes → Herramientas → Actualizar yt-dlp**.
+Los sitios cambian seguido. El programa actualiza yt-dlp solo una vez al día, pero si algo falla puedes forzarlo en **Ajustes → Herramientas → Actualizar**.
 
 ## Compilar desde el código
 

@@ -2,6 +2,7 @@
 
 export type Preset = 'mp4_best' | 'mp4_1080' | 'mp4_720' | 'mp4_480' | 'mp3_320' | 'mp3_192' | 'm4a'
 export type JobStatus = 'queued' | 'downloading' | 'processing' | 'done' | 'error' | 'canceled'
+export type Theme = 'system' | 'light' | 'dark'
 
 export interface Settings {
   download_dir: string
@@ -9,6 +10,9 @@ export interface Settings {
   max_concurrent: number
   cookies_browser: string
   watch_clipboard: boolean
+  notify_done: boolean
+  auto_update_ytdlp: boolean
+  theme: Theme
 }
 
 export interface Info {
@@ -49,6 +53,7 @@ export interface Job {
   error: string
   warning: string
   created: number
+  resumed: boolean
 }
 
 export interface HistoryItem {
@@ -71,7 +76,21 @@ export interface AppState {
   missing_tools: string[]
   ffmpeg: FfmpegState
   jobs: Job[]
+  ytdlp_updating: boolean
+  app_update: AppUpdate | null
 }
+
+export interface AppUpdate {
+  current: string
+  latest: string
+  newer: boolean
+  url: string
+}
+
+export type AppEvent =
+  | { type: 'ytdlp'; status: 'updating' }
+  | { type: 'ytdlp'; status: 'done'; version: string; changed: boolean }
+  | { type: 'app-update'; update: AppUpdate }
 
 export type FfmpegState = 'ok' | 'blocked' | 'missing'
 
@@ -105,6 +124,9 @@ interface PyApi {
   ffmpeg_state(): Promise<Result<{ ffmpeg: FfmpegState; ffmpeg_dir: string }>>
   reinstall_ffmpeg(): Promise<Result<string>>
   update_ytdlp(): Promise<Result<{ output: string; version: string }>>
+  apply_theme(dark: boolean): Promise<Result<null>>
+  check_app_update(): Promise<Result<AppUpdate>>
+  open_url(url: string): Promise<Result<null>>
   get_info(url: string): Promise<Result<Info>>
   start_download(url: string, preset: Preset, playlist: boolean, title: string, thumbnail: string): Promise<Result<Job>>
   cancel(id: string): Promise<Result<null>>
@@ -122,6 +144,7 @@ declare global {
     pywebview?: { api: PyApi }
     __mdJob?: (job: Job) => void
     __mdSetup?: (ev: SetupEvent) => void
+    __mdEvent?: (ev: AppEvent) => void
   }
 }
 
@@ -165,16 +188,20 @@ function createMock(): PyApi {
     max_concurrent: 2,
     cookies_browser: '',
     watch_clipboard: true,
+    notify_done: true,
+    auto_update_ytdlp: true,
+    theme: 'system',
   }
   const jobs: Job[] = []
   const fakeJob = (url: string, preset: Preset, playlist: boolean, title: string, thumbnail: string): Job => ({
     id: Math.random().toString(36).slice(2, 12), url, preset, playlist, title: title || url, thumbnail,
     status: 'downloading', progress: 0, speed: 0, eta: 0, downloaded: 0, total: 50e6, stage: '',
     item_index: 0, item_count: 0, item_title: '', filepath: '', folder: '', files: 0, error: '', warning: '',
-    created: Date.now() / 1000,
+    created: Date.now() / 1000, resumed: false,
   })
   return {
-    get_state: () => ok({ version: 'dev', settings, tools_ready: true, missing_tools: [], ffmpeg: 'ok', jobs }),
+    get_state: () =>
+      ok({ version: 'dev', settings, tools_ready: true, missing_tools: [], ffmpeg: 'ok', jobs, ytdlp_updating: false, app_update: null }),
     save_settings: (d) => ok((settings = { ...settings, ...d })),
     choose_folder: () => ok(settings),
     read_clipboard: () => ok(''),
@@ -183,6 +210,9 @@ function createMock(): PyApi {
     ffmpeg_state: () => ok({ ffmpeg: 'ok', ffmpeg_dir: '' }),
     reinstall_ffmpeg: () => ok('started'),
     update_ytdlp: () => ok({ output: 'yt-dlp is up to date', version: '2026.11.01' }),
+    apply_theme: () => ok(null),
+    check_app_update: () => ok({ current: 'dev', latest: '1.1.0', newer: true, url: 'https://github.com/' }),
+    open_url: () => ok(null),
     get_info: (url) =>
       new Promise((r) =>
         setTimeout(() => r({

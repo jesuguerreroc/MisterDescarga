@@ -126,11 +126,11 @@ _ERROR_INTEGRITY_POLICY = 4551
 _ffmpeg_cache: tuple[str, str] | None = None  # (estado, carpeta)
 
 
-def _probe(exe: Path) -> str:
+def _probe(exe: Path, arg: str = "-version") -> str:
     """'ok' | 'blocked' | 'broken'"""
     try:
         r = subprocess.run(
-            [str(exe), "-version"], capture_output=True, timeout=20, creationflags=CREATE_NO_WINDOW
+            [str(exe), arg], capture_output=True, timeout=20, creationflags=CREATE_NO_WINDOW
         )
     except OSError as exc:
         return "blocked" if getattr(exc, "winerror", None) == _ERROR_INTEGRITY_POLICY else "broken"
@@ -245,9 +245,22 @@ def ytdlp_version() -> str:
 
 
 def update_ytdlp() -> str:
-    """Ejecuta `yt-dlp -U` y devuelve la salida legible."""
+    """Ejecuta `yt-dlp -U` y devuelve la salida legible.
+
+    Antes guarda una copia: si Windows (Smart App Control) bloquea la versión nueva,
+    se vuelve a dejar la anterior para que el programa siga funcionando.
+    """
     if not YTDLP.exists():
         raise RuntimeError("yt-dlp no está instalado todavía")
-    result = run_tool([str(YTDLP), "-U"], timeout=180)
-    out = (result.stdout + "\n" + result.stderr).strip()
-    return out or "Listo."
+    backup = YTDLP.with_name("yt-dlp.respaldo.exe")
+    shutil.copy2(YTDLP, backup)
+    try:
+        result = run_tool([str(YTDLP), "-U"], timeout=180)
+        out = (result.stdout + "\n" + result.stderr).strip() or "Listo."
+        if not YTDLP.exists() or _probe(YTDLP, "--version") != "ok":
+            YTDLP.unlink(missing_ok=True)
+            shutil.copy2(backup, YTDLP)
+            out += "\n\nWindows no dejó abrir la versión nueva, así que se mantuvo la anterior."
+        return out
+    finally:
+        backup.unlink(missing_ok=True)

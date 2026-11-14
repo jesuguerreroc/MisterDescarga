@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Check, RefreshCw } from 'lucide-react'
-import { call, type Preset, type Settings, type ToolsInfo } from '../api'
+import { call, type AppUpdate, type Preset, type Settings, type Theme, type ToolsInfo } from '../api'
 import { PRESETS, presetLabel } from '../format'
 import { Button, Segmented, Spinner, Toggle } from './ui'
 
@@ -10,6 +10,7 @@ interface Props {
   onChange: (s: Settings) => void
   onError: (m: string) => void
   onReinstallFfmpeg: () => void
+  onAppUpdate: (u: AppUpdate | null) => void
 }
 
 const BROWSERS = [
@@ -24,10 +25,18 @@ const BROWSERS = [
 
 const selectCls = 'rounded-[10px] border border-line-strong bg-card px-3 py-2 outline-none hover:border-ink focus:border-ink cursor-pointer'
 
-export function SettingsPanel({ settings, version, onChange, onError, onReinstallFfmpeg }: Props) {
+const THEMES: { id: Theme; label: string }[] = [
+  { id: 'light', label: 'Claro' },
+  { id: 'dark', label: 'Oscuro' },
+  { id: 'system', label: 'Como Windows' },
+]
+
+export function SettingsPanel({ settings, version, onChange, onError, onReinstallFfmpeg, onAppUpdate }: Props) {
   const [tools, setTools] = useState<ToolsInfo | null>(null)
   const [updating, setUpdating] = useState(false)
   const [updateOut, setUpdateOut] = useState('')
+  const [checking, setChecking] = useState(false)
+  const [appCheck, setAppCheck] = useState<AppUpdate | null>(null)
 
   useEffect(() => {
     call('tools_info').then(setTools).catch(() => {})
@@ -64,6 +73,19 @@ export function SettingsPanel({ settings, version, onChange, onError, onReinstal
     }
   }
 
+  const checkApp = async () => {
+    setChecking(true)
+    try {
+      const r = await call('check_app_update')
+      setAppCheck(r)
+      onAppUpdate(r.newer ? r : null)
+    } catch (e) {
+      onError((e as Error).message)
+    } finally {
+      setChecking(false)
+    }
+  }
+
   const recheck = async () => {
     const r = await call('ffmpeg_state')
     setTools((t) => (t ? { ...t, ...r } : t))
@@ -72,6 +94,12 @@ export function SettingsPanel({ settings, version, onChange, onError, onReinstal
   return (
     <div>
       <h1 className="mb-5 font-display text-[26px] leading-tight font-bold tracking-[-0.02em]">Ajustes</h1>
+
+      <Group title="Apariencia">
+        <Item label="Tema" hint="«Como Windows» sigue el modo claro u oscuro del sistema.">
+          <Segmented options={THEMES} value={settings.theme} onChange={(v) => save({ theme: v })} />
+        </Item>
+      </Group>
 
       <Group title="Descargas">
         <Item label="Guardar en" hint={settings.download_dir}>
@@ -101,6 +129,9 @@ export function SettingsPanel({ settings, version, onChange, onError, onReinstal
         <Item label="Detectar enlaces copiados" hint="Al volver a la ventana, te ofrece bajar lo que copiaste.">
           <Toggle checked={settings.watch_clipboard} onChange={(v) => save({ watch_clipboard: v })} />
         </Item>
+        <Item label="Avisarme al terminar" hint="Muestra una notificación de Windows si estás en otra ventana.">
+          <Toggle checked={settings.notify_done} onChange={(v) => save({ notify_done: v })} />
+        </Item>
       </Group>
 
       <Group title="Videos que piden iniciar sesión">
@@ -119,7 +150,10 @@ export function SettingsPanel({ settings, version, onChange, onError, onReinstal
       </Group>
 
       <Group title="Herramientas">
-        <Item label="yt-dlp" hint={`Versión ${tools?.ytdlp || '—'}. Si un sitio deja de funcionar, actualízalo.`}>
+        <Item label="Actualizar yt-dlp solo" hint="Lo revisa una vez al día al abrir el programa. Así los sitios siguen funcionando.">
+          <Toggle checked={settings.auto_update_ytdlp} onChange={(v) => save({ auto_update_ytdlp: v })} />
+        </Item>
+        <Item label="yt-dlp" hint={`Versión ${tools?.ytdlp || '—'}. Si un sitio deja de funcionar, actualízalo ahora.`}>
           <Button onClick={update} disabled={updating}>
             {updating ? <Spinner className="size-3.5" /> : <RefreshCw className="size-3.5" />} Actualizar
           </Button>
@@ -158,8 +192,31 @@ export function SettingsPanel({ settings, version, onChange, onError, onReinstal
         )}
       </Group>
 
+      <Group title="MisterDescarga">
+        <Item
+          label={`Versión ${version}`}
+          hint={
+            appCheck
+              ? appCheck.newer
+                ? `Hay una versión nueva: ${appCheck.latest}.`
+                : 'Tienes la última versión.'
+              : 'Al abrir el programa revisa si salió una versión nueva.'
+          }
+        >
+          {appCheck?.newer ? (
+            <Button variant="primary" onClick={() => call('open_url', appCheck.url).catch((e: Error) => onError(e.message))}>
+              Descargar {appCheck.latest}
+            </Button>
+          ) : (
+            <Button onClick={checkApp} disabled={checking}>
+              {checking ? <Spinner className="size-3.5" /> : <RefreshCw className="size-3.5" />} Buscar actualizaciones
+            </Button>
+          )}
+        </Item>
+      </Group>
+
       <p className="mt-6 text-center text-[12.5px] text-ink-3">
-        MisterDescarga {version}. Hecho con yt-dlp y FFmpeg. Úsalo solo con contenido que tengas derecho a bajar.
+        Hecho con yt-dlp y FFmpeg. Úsalo solo con contenido que tengas derecho a bajar.
       </p>
     </div>
   )

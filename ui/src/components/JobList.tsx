@@ -44,7 +44,7 @@ function JobRow({ job, act }: { job: Job; act: (p: Promise<unknown>) => void }) 
   let status: string
   switch (job.status) {
     case 'queued':
-      status = 'Esperando turno'
+      status = job.resumed ? 'Sigue donde quedó cuando cerraste' : 'Esperando turno'
       break
     case 'downloading': {
       const parts: string[] = []

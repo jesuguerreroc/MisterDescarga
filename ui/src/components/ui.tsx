@@ -14,7 +14,7 @@ const BEAK = 'M106 146 H150 Q152 146 150 149 L131 173 Q128 177 125 173 L106 149 
 function PenguinShapes() {
   return (
     <>
-      <path fill="#17160f" d={BODY} />
+      <path fill="#17160f" d={BODY} className="penguin-body" />
       <path fill="#fffefa" d={FACE} />
       <path fill="#17160f" d={GLASSES} />
       <path fill="#fffefa" d={GLINT} />
@@ -38,8 +38,8 @@ export function Logo({ size = 32 }: { size?: number }) {
 /** El pingüino solo, para estados vacíos y bienvenida. */
 export function Penguin({ size = 96, className = '' }: { size?: number; className?: string }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 256 256" aria-hidden className={className}>
-      <ellipse cx="128" cy="244" rx="70" ry="8" fill="#17160f" opacity="0.08" />
+    <svg width={size} height={size} viewBox="0 0 256 256" aria-hidden className={`penguin-solo ${className}`}>
+      <ellipse cx="128" cy="244" rx="70" ry="8" style={{ fill: 'var(--color-ink)' }} opacity="0.08" />
       <PenguinShapes />
     </svg>
   )
@@ -58,8 +58,8 @@ export function Button({
   const base =
     'inline-flex items-center justify-center gap-2 rounded-[10px] text-[13.5px] font-semibold cursor-pointer select-none disabled:opacity-40 disabled:cursor-not-allowed'
   const styles: Record<Variant, string> = {
-    primary: 'press bg-sun text-ink border-2 border-ink px-4 py-2 hover:brightness-105',
-    dark: 'bg-ink text-paper px-4 py-2 hover:bg-[#2b2a22]',
+    primary: 'press bg-sun text-on-sun border-2 border-on-sun px-4 py-2 hover:brightness-105',
+    dark: 'bg-ink text-paper px-4 py-2 hover:opacity-90',
     outline: 'border border-line-strong bg-card text-ink px-3 py-1.5 hover:border-ink',
     quiet: 'text-ink-2 px-2.5 py-1.5 hover:text-ink hover:bg-sunk',
     danger: 'text-bad px-2.5 py-1.5 hover:bg-bad/10',
@@ -155,7 +155,7 @@ export function Toggle({ checked, onChange, label }: { checked: boolean; onChang
         }`}
       >
         <span
-          className={`absolute top-[2px] size-[14px] rounded-full bg-ink transition-all ${checked ? 'left-[18px]' : 'left-[2px]'}`}
+          className={`absolute top-[2px] size-[14px] rounded-full transition-all ${checked ? 'left-[18px] bg-on-sun' : 'left-[2px] bg-ink'}`}
         />
       </button>
       {label}
